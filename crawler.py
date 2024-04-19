@@ -11,14 +11,14 @@ client = pymongo.MongoClient("mongodb://localhost:27017/")
 db = client["ptt"]
 movies_by_threads = db["movies_by_threads"]
 
-class Push():
+class Push:
     def __init__(self, push_tag: str, push_userid: str, push_content: str, push_time: str):
         self.push_tag = push_tag
         self.push_userid = push_userid
         self.push_content = push_content
         self.push_time = datetime.strptime(f"{push_time}", "%m/%d %H:%M")
 
-class Article():
+class Article:
     def __init__(self, article_id: int, author: str, title: str, article_time: datetime, content: str, pushes: list[Push]):
         self.article_id = article_id # 第幾篇文章
         self.author = author
@@ -29,7 +29,7 @@ class Article():
 
 article_queue: Queue[Article] = Queue()
 
-class Crawler():
+class Crawler:
     def __init__(self):
         self.driver = webdriver.Chrome()
         # 隱性等待
@@ -37,23 +37,24 @@ class Crawler():
         # 非針對特定元素，而是全局元素的等待，定位元素時，需要等待頁面全部元素載入完成(瀏覽器左上角圈圈不再轉)才會執行下一步
         # 若提早載入完成會直接結束等待，超出等待時間則拋出異常
         self.driver.implicitly_wait(10)
-        self.article_id = movies_by_threads.count_documents() + 1
 
         self.crawler_thread = Thread(target=self.run)
         self.crawler_thread.daemon = True
         self.crawler_thread.start()
 
-    def scrape(self, href: str, article_id: int, title: str):
+    def scrape(self, href: str, title: str):
         self.driver.get(href)
         soup = BeautifulSoup(self.driver.page_source, "lxml")
 
-        article_meta = soup.select("span.article-meta-value")
-        if article_meta:
-            author = article_meta[0].text.strip()
-            article_time = datetime.strptime(article_meta[3].text.strip(), "%a %b %d %H:%M:%S %Y")
+        author_span = soup.find("span", class_="article-meta-tag", string="作者")
+        article_time_span = soup.find("span", class_="article-meta-tag", string="時間")
 
-        # 文章格式不正確
-        elif not article_meta:
+        if author_span and article_time_span:
+            author = author_span.next_sibling.text.strip()
+            article_time = article_time_span.next_sibling.text.strip()
+
+        else:
+            # 文章格式不正確
             author = ""
             article_time = ""
 
@@ -74,10 +75,15 @@ class Crawler():
         for push in pushes:
             spans = push.contents
 
-            push_tag = spans[0].text.strip()
-            push_userid = spans[1].text.strip()
-            push_content = spans[2].text.strip()
-            push_time = spans[3].text.strip()
+            try:
+                push_tag = spans[0].text.strip()
+                push_userid = spans[1].text.strip()
+                push_content = spans[2].text.strip()
+                push_time = spans[3].text.strip()
+        
+            except IndexError:
+                # 少數文章由於回文太多，會出現結構不同的提示訊息，直接跳過
+                continue
 
             push_objs.append(
                 Push(
@@ -88,6 +94,7 @@ class Crawler():
                 ).__dict__
             )
         
+        article_id = movies_by_threads.count_documents({}) + 1
         article_queue.put_nowait(
             Article(
                 article_id=article_id,
@@ -110,7 +117,7 @@ class Crawler():
                 title = a.text.strip()
 
                 # 抓取文章標題、內容、回文
-                self.scrape(href, self.article_id, title)
+                self.scrape(href, title)
 
                 # 返回文章列表
                 self.driver.back()
@@ -124,7 +131,7 @@ class Crawler():
                     title = a.text.strip()
 
                     # 抓取文章標題、內容、回文
-                    self.scrape(href, self.article_id, title)
+                    self.scrape(href, title)
 
                     # 返回文章列表
                     self.driver.back()
@@ -132,7 +139,7 @@ class Crawler():
         finally:
             self.driver.quit()
 
-class Saver():
+class Saver:
     def __init__(self):
         self.saver_thread = Thread(target=self.run)
         self.saver_thread.daemon = True
@@ -147,29 +154,29 @@ class Saver():
                 article = article_queue.get_nowait()
                 movies_by_threads.update_one(
                     # 檢查重複
-                    # 同一個作者不可能同一時間發超過一篇文
-                    {"author": article.author, "article_time": article.article_time},
+                    # 同一個作者不會同一時間發超過一篇文
+                    {"author": article["author"], "article_time": article["article_time"]},
                     {"$set": article},
                     upsert=True
                 )
 
-class Main():
+class Main:
     def get_list(self):
         article_list = list(
             movies_by_threads.aggregate(
                 [
-                    {"$sample": {"size": 15}},
+                    # {"$sample": {"size": 15}},
                     {"$project": {"_id": 0, "article_id": 1, "title": 1}}
                 ]
             )
         )
 
-        print("title")
+        print(f"article_id     title")
 
-        for article in article_list:
-            print(article["title"])
+        # for article in article_list:
+        #     print(f"{article['article_id'] : <15}{article['title']}")
         
-        # print(len(article_list))
+        print(len(article_list))
 
     def get_article(self):
 
@@ -189,7 +196,7 @@ class Main():
 
         while True:
             try:
-                query_str = input("Enter query string or exit to switch to other actions: ")
+                query_str = input("Enter query string or exit to switch to other actions: ").strip()
                 article = movies_by_threads.find_one({"title": query_str}, {"_id": 0})
 
                 if query_str == "exit":
