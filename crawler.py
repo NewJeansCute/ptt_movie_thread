@@ -14,6 +14,7 @@ client = pymongo.MongoClient("mongodb://localhost:27017/")
 db = client["ptt"]
 movies_by_threads = db["movies_by_threads"]
 
+logger.remove()
 logger.add("ptt_movies.log")
 
 
