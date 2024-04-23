@@ -1,33 +1,41 @@
+import time
+import random
+import pymongo
 from queue import Queue
+from loguru import logger
 from threading import Thread
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from bs4 import BeautifulSoup
 from datetime import datetime
-import pymongo
+
 
 client = pymongo.MongoClient("mongodb://localhost:27017/")
 db = client["ptt"]
 movies_by_threads = db["movies_by_threads"]
+
+logger.add("ptt_movies.log")
+
 
 class Push:
     def __init__(self, push_tag: str, push_userid: str, push_content: str, push_time: str):
         self.push_tag = push_tag
         self.push_userid = push_userid
         self.push_content = push_content
-        self.push_time = datetime.strptime(f"{push_time}", "%m/%d %H:%M")
+        self.push_time = datetime.strptime(f"2024/{push_time}", "%Y/%m/%d %H:%M")
+
 
 class Article:
-    def __init__(self, article_id: int, author: str, title: str, article_time: datetime, content: str, pushes: list[Push]):
-        self.article_id = article_id # 第幾篇文章
+    def __init__(self, author: str, title: str, article_time: str, content: str, pushes: list[Push]):
         self.author = author
         self.title = title
-        self.article_time = article_time
+        self.article_time = datetime.strptime(article_time, "%a %b %d %H:%M:%S %Y")
         self.content = content
         self.pushes = pushes
 
-article_queue: Queue[Article] = Queue()
+
+article_queue: Queue[Article.__dict__] = Queue()
+
 
 class Crawler:
     def __init__(self):
@@ -41,6 +49,7 @@ class Crawler:
         self.crawler_thread = Thread(target=self.run)
         self.crawler_thread.daemon = True
         self.crawler_thread.start()
+        logger.info("Crawler thread started")
 
     def scrape(self, href: str, title: str):
         self.driver.get(href)
@@ -57,6 +66,7 @@ class Crawler:
             # 文章格式不正確
             author = ""
             article_time = ""
+            logger.error(f"Got an article of invalid format. Title: {title}")
 
         main_content = soup.find("div", id="main-content").text
         article = main_content.split("\n--\n")[0]
@@ -68,7 +78,7 @@ class Crawler:
             content = "\n".join(lines[1:])
 
         # 回文
-        push_objs: list[Push] = []
+        push_objs: list[Push.__dict__] = []
         url_span = soup.select("span.f2")[-1]
         pushes = url_span.find_all_next("div", class_="push")
 
@@ -80,9 +90,9 @@ class Crawler:
                 push_userid = spans[1].text.strip()
                 push_content = spans[2].text.strip()
                 push_time = spans[3].text.strip()
-        
+
             except IndexError:
-                # 少數文章由於回文太多，會出現結構不同的提示訊息，直接跳過
+                # 少數文章由於回文太多，會出現結構不同的提示訊息，直接跳過該訊息
                 continue
 
             push_objs.append(
@@ -93,11 +103,9 @@ class Crawler:
                     push_time=push_time
                 ).__dict__
             )
-        
-        article_id = movies_by_threads.count_documents({}) + 1
+
         article_queue.put_nowait(
             Article(
-                article_id=article_id,
                 author=author,
                 title=title,
                 article_time=article_time,
@@ -105,19 +113,25 @@ class Crawler:
                 pushes=push_objs
             ).__dict__
         )
+        logger.success("Added a new article into article_queue.")
 
     def run(self):
         try:
             # 抓取文章連結
             # 最新頁
             self.driver.get(f"https://www.ptt.cc/bbs/movie/index.html")
+            current_url = self.driver.current_url
+            logger.info(f"Started crawling {current_url}.")
 
             for a in self.driver.find_elements(By.CSS_SELECTOR, ".title a"):
                 href = a.get_attribute("href")
                 title = a.text.strip()
 
-                # 抓取文章標題、內容、回文
+                # 抓取文章資訊
                 self.scrape(href, title)
+                # 調整發送頻率，避免短時間內大量send request
+                sleep_time = random.uniform(1, 20)
+                time.sleep(sleep_time)
 
                 # 返回文章列表
                 self.driver.back()
@@ -125,13 +139,18 @@ class Crawler:
             # 往後1000頁
             for page in range(1000):
                 self.driver.find_element(By.XPATH, "//a[@class='btn wide' and contains(text(), '‹ 上頁')]").click()
+                current_url = self.driver.current_url
+                logger.info(f"Started crawling {current_url}.")
 
                 for a in self.driver.find_elements(By.CSS_SELECTOR, ".title a"):
                     href = a.get_attribute("href")
                     title = a.text.strip()
 
-                    # 抓取文章標題、內容、回文
+                    # 抓取文章資訊
                     self.scrape(href, title)
+                    # 調整發送頻率，避免短時間內大量send request
+                    sleep_time = random.uniform(1, 20)
+                    time.sleep(sleep_time)
 
                     # 返回文章列表
                     self.driver.back()
@@ -139,11 +158,13 @@ class Crawler:
         finally:
             self.driver.quit()
 
+
 class Saver:
     def __init__(self):
         self.saver_thread = Thread(target=self.run)
         self.saver_thread.daemon = True
         self.saver_thread.start()
+        logger.info("Saver thread started")
 
     def run(self):
         while True:
@@ -159,24 +180,24 @@ class Saver:
                     {"$set": article},
                     upsert=True
                 )
+                logger.success("Added a new article into MongoDB.")
+
 
 class Main:
     def get_list(self):
         article_list = list(
             movies_by_threads.aggregate(
                 [
-                    # {"$sample": {"size": 15}},
-                    {"$project": {"_id": 0, "article_id": 1, "title": 1}}
+                    {"$sample": {"size": 15}},
+                    {"$project": {"_id": 0, "title": 1}}
                 ]
             )
         )
 
-        print(f"article_id     title")
+        print("title")
 
-        # for article in article_list:
-        #     print(f"{article['article_id'] : <15}{article['title']}")
-        
-        print(len(article_list))
+        for article in article_list:
+            print(article['title'])
 
     def get_article(self):
 
@@ -189,47 +210,59 @@ class Main:
                         push_time = datetime.strftime(i['push_time'], '%m-%d %H:%M')
                         push_string = f"{i['push_tag']} {i['push_userid']} {i['push_content']} {push_time}"
                         print(push_string, "\n")
-                
+
                 else:
                     print(k, "\n")
                     print(v, "\n")
 
         while True:
-            try:
-                query_str = input("Enter query string or exit to switch to other actions: ").strip()
-                article = movies_by_threads.find_one({"title": query_str}, {"_id": 0})
+            title = input("Enter the title or 'exit' to switch to other actions: ").strip()
+            article = list(
+                movies_by_threads.aggregate(
+                    [
+                        {"$match": {"title": title}},
+                        {"$replaceRoot": {
+                            "newRoot": {"title": "$title", "content": "$content", "pushes": "$pushes"}
+                        }}
+                    ]
+                )
+            )
 
-                if query_str == "exit":
-                    break
+            if title == "exit":
+                break
+
+            else:
+                if article:
+                    print_article(article[0])
 
                 else:
-                    if article:
-                        print_article(article)
-
-                    else:
-                        print("Article not found, try again or enter 'exit' to switch to other actions.")
-
-            except ValueError:
-                print("Only accept integers, try again.")
+                    print("Article not found. Try again or enter 'exit' to switch to other actions.")
+                    logger.error(f"Article not found. Input title is {title}.")
 
     def menu(self):
         while True:
             try:
                 print("\n1: Get the list of 15 articles. 2: Get the specified article. 3: Exit.")
                 action = int(input("Enter an action: "))
-                
+
                 if action == 1:
                     self.get_list()
 
                 elif action == 2:
                     self.get_article()
-                    
+
                 elif action == 3:
                     print("Bye.")
                     break
 
-            except ValueError as e:
-                print("Only accept integers, try again.")
+                else:
+                    print("Only accept 1, 2, or 3. Try again.")
+                    logger.error("Menu got an integer input that's not in the range.")
+
+            except ValueError:
+                print("Only accept integers. Try again.")
+                logger.error("Menu got an input that's not integer.")
+
 
 crawler = Crawler()
 saver = Saver()
