@@ -41,10 +41,6 @@ article_queue: Queue[Article.__dict__] = Queue()
 class Crawler:
     def __init__(self):
         self.driver = webdriver.Chrome()
-        # 隱性等待
-        # 由webdriver提供的方法，設置後會在WebDriver實例的整個生命週期起作用
-        # 非針對特定元素，而是全局元素的等待，定位元素時，需要等待頁面全部元素載入完成(瀏覽器左上角圈圈不再轉)才會執行下一步
-        # 若提早載入完成會直接結束等待，超出等待時間則拋出異常
         self.driver.implicitly_wait(10)
 
         self.crawler_thread = Thread(target=self.run)
