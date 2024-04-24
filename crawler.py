@@ -15,7 +15,7 @@ db = client["ptt"]
 movies_by_threads = db["movies_by_threads"]
 
 logger.remove()
-logger.add("ptt_movies.log")
+logger.add("./ptt_movies_{time:YYYY-MM-DD}.log", encoding="utf-8")
 
 
 class Push:
